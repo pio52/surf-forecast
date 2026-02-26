@@ -5,15 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Surf Forecast</title>
 
-  <!-- Leaflet (SIN integrity, para evitar bloqueos) -->
+  <!-- Leaflet (sin integrity para evitar bloqueos) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 
   <style>
-    :root { color-scheme: light; }
     body { margin: 0; font-family: -apple-system, system-ui, Segoe UI, Roboto, Arial, sans-serif; }
     header { padding: 12px 14px 10px; border-bottom: 1px solid #e6e6e6; }
     h1 { font-size: 18px; margin: 0; }
-    p { margin: 8px 0 0; font-size: 14px; color: #333; }
+    p  { margin: 8px 0 0; font-size: 14px; color: #333; }
 
     #status {
       padding: 10px 14px;
@@ -28,10 +27,8 @@
     #map {
       height: calc(100vh - 98px);
       min-height: 420px;
-      background: #eef2f6; /* para que NO se vea “blanco” aunque falle el tile */
+      background: #eef2f6;
     }
-
-    .leaflet-control-attribution { font-size: 11px; }
   </style>
 </head>
 
@@ -44,86 +41,113 @@
   <div id="status"></div>
   <div id="map"></div>
 
-  <!-- Leaflet JS (SIN integrity) -->
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
     const statusEl = document.getElementById("status");
-    function showStatus(msg) {
-      statusEl.style.display = "block";
-      statusEl.textContent = msg;
-    }
+    function showStatus(msg) { statusEl.style.display = "block"; statusEl.textContent = msg; }
+    function hideStatus() { statusEl.style.display = "none"; statusEl.textContent = ""; }
 
-    // 1) Validar que Leaflet cargó
     if (!window.L) {
-      showStatus(
-        "❌ No cargó Leaflet.\n" +
-        "Causa común: tu red/bloqueadores están bloqueando cdn.jsdelivr.net.\n\n" +
-        "Prueba:\n" +
-        "• Abrir en modo incógnito\n" +
-        "• Desactivar adblock/VPN\n" +
-        "• Cambiar de Wi-Fi a datos (o viceversa)\n"
-      );
+      showStatus("❌ No cargó Leaflet. Prueba desactivar VPN/adblock o cambiar de red.");
       throw new Error("Leaflet no cargó");
     }
 
-    // 2) Crear mapa
-    const map = L.map("map", { zoomControl: true }).setView([15.86, -97.07], 7); // zona Oaxaca aprox
+    // Centro aproximado en Oaxaca (puedes cambiarlo)
+    const map = L.map("map").setView([15.86, -97.07], 7);
 
     const tile = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18,
-      attribution: '&copy; OpenStreetMap contributors'
+      attribution: "&copy; OpenStreetMap contributors"
     }).addTo(map);
 
-    // Si el tile falla (bloqueo de OSM)
     tile.on("tileerror", () => {
-      showStatus(
-        "⚠️ El mapa base (OpenStreetMap tiles) está bloqueado o sin internet.\n" +
-        "Prueba:\n" +
-        "• Cambia de Wi-Fi a datos\n" +
-        "• Desactiva VPN/adblock\n" +
-        "• Intenta otra red\n"
-      );
+      showStatus("⚠️ El mapa base (tiles) está bloqueado o sin internet. Prueba otra red/VPN off.");
     });
 
+    // utilidades
     function metersToFeet(m) { return m * 3.28084; }
     function msToMph(ms) { return ms * 2.23694; }
-
     function dirText(deg) {
       const dirs = ["N","NE","E","SE","S","SW","W","NW"];
       return dirs[Math.round(deg/45) % 8];
     }
 
-    async function fetchForecast(lat, lon) {
-      const url =
-        `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
-        `&hourly=wave_height,wave_direction,wave_period,wind_speed,wind_direction` +
-        `&timezone=auto&forecast_days=3`;
+    function pickNearestIndex(times) {
+      const now = new Date();
+      let best = 0, bestDiff = Infinity;
+      for (let i = 0; i < times.length; i++) {
+        const d = new Date(times[i]); // ISO sin zona -> el navegador lo toma local
+        const diff = Math.abs(d - now);
+        if (diff < bestDiff) { bestDiff = diff; best = i; }
+      }
+      return best;
+    }
 
+    async function fetchJsonOrThrow(url) {
       const resp = await fetch(url, { cache: "no-store" });
-      if (!resp.ok) throw new Error("Open-Meteo no respondió (HTTP " + resp.status + ")");
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(`HTTP ${resp.status} en ${url}\n${txt}`.slice(0, 700));
+      }
       return resp.json();
     }
+
+    async function getMarine(lat, lon) {
+      // Olas (Marine API)
+      const url =
+        `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
+        `&hourly=wave_height,wave_direction,wave_period` +
+        `&timezone=auto&forecast_days=3`;
+      return fetchJsonOrThrow(url);
+    }
+
+    async function getWeather(lat, lon) {
+      // Viento (Weather API)
+      const url =
+        `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+        `&hourly=wind_speed_10m,wind_direction_10m` +
+        `&timezone=auto&forecast_days=3`;
+      return fetchJsonOrThrow(url);
+    }
+
+    let marker = null;
 
     map.on("click", async (e) => {
       const lat = e.latlng.lat.toFixed(4);
       const lon = e.latlng.lng.toFixed(4);
 
-      try {
-        const data = await fetchForecast(lat, lon);
+      hideStatus();
+      showStatus("Cargando datos...");
 
-        // Tomamos el primer punto (puedes cambiar a uno por hora más tarde)
-        const i = 0;
-        const t = data.hourly.time[i].replace("T", " ");
-        const waveH = data.hourly.wave_height[i];
-        const waveDir = data.hourly.wave_direction[i];
-        const wavePer = data.hourly.wave_period[i];
-        const windSp = data.hourly.wind_speed[i];
-        const windDir = data.hourly.wind_direction[i];
+      if (marker) marker.remove();
+      marker = L.marker(e.latlng).addTo(map);
+
+      try {
+        const [marine, weather] = await Promise.all([
+          getMarine(lat, lon),
+          getWeather(lat, lon)
+        ]);
+
+        // Si el punto está muy tierra adentro, a veces el Marine API puede fallar o venir vacío.
+        if (!marine.hourly || !marine.hourly.time || marine.hourly.time.length === 0) {
+          throw new Error("No hay datos marinos para este punto. Prueba seleccionar un punto más cerca del mar.");
+        }
+
+        const idxM = pickNearestIndex(marine.hourly.time);
+        const idxW = pickNearestIndex(weather.hourly.time);
+
+        const tM = marine.hourly.time[idxM].replace("T"," ");
+        const waveH = marine.hourly.wave_height[idxM];
+        const waveDir = marine.hourly.wave_direction[idxM];
+        const wavePer = marine.hourly.wave_period[idxM];
+
+        const windSp = weather.hourly.wind_speed_10m[idxW];
+        const windDir = weather.hourly.wind_direction_10m[idxW];
 
         const html = `
           <div style="font-size:14px; line-height:1.3">
-            <div style="font-weight:700; margin-bottom:6px">${t}</div>
+            <div style="font-weight:700; margin-bottom:6px">${tM}</div>
             <div style="margin-bottom:8px;color:#333">Lat ${lat}, Lon ${lon}</div>
 
             <table style="border-collapse:collapse; width:100%">
@@ -163,18 +187,11 @@
           </div>
         `;
 
-        // limpia mensajes si ya funcionó
-        statusEl.style.display = "none";
+        hideStatus();
         L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
 
       } catch (err) {
-        showStatus(
-          "❌ Error obteniendo forecast.\n" +
-          (err && err.message ? err.message : String(err)) + "\n\n" +
-          "Prueba:\n" +
-          "• Cambiar de red (Wi-Fi/datos)\n" +
-          "• Desactivar VPN/adblock\n"
-        );
+        showStatus("❌ Error obteniendo datos:\n\n" + (err?.message || String(err)));
       }
     });
   </script>
