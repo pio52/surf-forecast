@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Surf Forecast Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-sA+4eU1paEm2MktE3aFl1LSe6izM2A1zG43SGtmv200=" crossorigin="anonymous" />
+  <style>
+    #map { height: 90vh; }
+    .popup-content { font-size: 14px; }
+    .popup-content table { border-collapse: collapse; width: 100%; }
+    .popup-content th, .popup-content td { border: 1px solid #ccc; padding: 4px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h2>Surf Forecast Demo</h2>
+  <p>Haz clic en cualquier punto del mapa para ver el pronóstico de oleaje (demo con datos de Open‑Meteo).</p>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-PsDPqNF78EY7dGx0fAgx0Zkmy+teRc2AAY1XgmszSn0=" crossorigin="anonymous"></script>
+  <script>
+    // Inicializar mapa
+    const map = L.map('map').setView([20, -100], 3);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Conversión de unidades
+    function metersToFeet(m) { return m * 3.28084; }
+    function msToMph(ms) { return ms * 2.23694; }
+
+    // Obtener datos de Open‑Meteo para una ubicación
+    async function fetchForecast(lat, lon) {
+      const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
+                  `&hourly=wave_height,wave_direction,wave_period,wind_speed,wind_direction` +
+                  `&timezone=auto&forecast_days=3`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Error al obtener datos');
+      return resp.json();
+    }
+
+    // Formatear dirección (grados) a texto
+    function formatDirection(deg) {
+      const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+      const ix = Math.round(deg / 45) % 8;
+      return dirs[ix];
+    }
+
+    // Manejar clic en el mapa
+    map.on('click', async (e) => {
+      const { lat, lng } = e.latlng;
+      try {
+        const data = await fetchForecast(lat.toFixed(4), lng.toFixed(4));
+        // Tomar el primer punto horario como ejemplo
+        const idx = 0;
+        const waveHeight = data.hourly.wave_height[idx];
+        const waveDirection = data.hourly.wave_direction[idx];
+        const wavePeriod = data.hourly.wave_period[idx];
+        const windSpeed = data.hourly.wind_speed[idx];
+        const windDir = data.hourly.wind_direction[idx];
+
+        const content = `
+          <div class="popup-content">
+            <strong>Pronóstico para ${data.hourly.time[idx].replace('T', ' ')}</strong><br>
+            <table>
+              <tr><th>Métrica</th><th>SI</th><th>Imperial</th></tr>
+              <tr><td>Altura de ola</td><td>${waveHeight.toFixed(2)} m</td><td>${metersToFeet(waveHeight).toFixed(2)} ft</td></tr>
+              <tr><td>Período de ola</td><td colspan="2">${wavePeriod.toFixed(1)} s</td></tr>
+              <tr><td>Dirección de ola</td><td colspan="2">${formatDirection(waveDirection)} (${waveDirection.toFixed(0)}°)</td></tr>
+              <tr><td>Velocidad del viento</td><td>${windSpeed.toFixed(1)} m/s</td><td>${msToMph(windSpeed).toFixed(1)} mph</td></tr>
+              <tr><td>Dirección del viento</td><td colspan="2">${formatDirection(windDir)} (${windDir.toFixed(0)}°)</td></tr>
+            </table>
+          </div>
+        `;
+        L.popup().setLatLng(e.latlng).setContent(content).openOn(map);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  </script>
+</body>
+</html>
