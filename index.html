@@ -1,25 +1,44 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <title>Surf Forecast Demo</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Surf Forecast</title>
 
-  <!-- Leaflet CSS (SIN integrity) -->
+  <!-- Leaflet (SIN integrity, para evitar bloqueos) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 
   <style>
+    :root { color-scheme: light; }
     body { margin: 0; font-family: -apple-system, system-ui, Segoe UI, Roboto, Arial, sans-serif; }
-    header { padding: 14px 14px 8px; }
-    #status { padding: 0 14px 10px; color: #b00020; font-size: 14px; }
-    #map { height: calc(100vh - 120px); min-height: 420px; }
+    header { padding: 12px 14px 10px; border-bottom: 1px solid #e6e6e6; }
+    h1 { font-size: 18px; margin: 0; }
+    p { margin: 8px 0 0; font-size: 14px; color: #333; }
+
+    #status {
+      padding: 10px 14px;
+      font-size: 14px;
+      background: #fff7e6;
+      color: #7a4b00;
+      border-bottom: 1px solid #f1d7a5;
+      display: none;
+      white-space: pre-wrap;
+    }
+
+    #map {
+      height: calc(100vh - 98px);
+      min-height: 420px;
+      background: #eef2f6; /* para que NO se vea “blanco” aunque falle el tile */
+    }
+
+    .leaflet-control-attribution { font-size: 11px; }
   </style>
 </head>
 
 <body>
   <header>
-    <h2 style="margin:0;">Surf Forecast Demo</h2>
-    <p style="margin:8px 0 0;">Haz clic/toca cualquier punto del mapa para ver el pronóstico (Open-Meteo).</p>
+    <h1>Surf Forecast</h1>
+    <p>Toca/clic en el mapa para ver olas + viento (Open-Meteo).</p>
   </header>
 
   <div id="status"></div>
@@ -29,82 +48,135 @@
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
-    (function () {
-      const status = document.getElementById("status");
+    const statusEl = document.getElementById("status");
+    function showStatus(msg) {
+      statusEl.style.display = "block";
+      statusEl.textContent = msg;
+    }
 
-      // Si Leaflet no cargó, lo avisamos
-      if (!window.L) {
-        status.textContent =
-          "❌ No se cargó el mapa (Leaflet). Revisa tu internet o si tu red está bloqueando el CDN. " +
-          "Intenta abrir en modo incógnito o desactiva bloqueadores.";
-        return;
-      }
+    // 1) Validar que Leaflet cargó
+    if (!window.L) {
+      showStatus(
+        "❌ No cargó Leaflet.\n" +
+        "Causa común: tu red/bloqueadores están bloqueando cdn.jsdelivr.net.\n\n" +
+        "Prueba:\n" +
+        "• Abrir en modo incógnito\n" +
+        "• Desactivar adblock/VPN\n" +
+        "• Cambiar de Wi-Fi a datos (o viceversa)\n"
+      );
+      throw new Error("Leaflet no cargó");
+    }
+
+    // 2) Crear mapa
+    const map = L.map("map", { zoomControl: true }).setView([15.86, -97.07], 7); // zona Oaxaca aprox
+
+    const tile = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Si el tile falla (bloqueo de OSM)
+    tile.on("tileerror", () => {
+      showStatus(
+        "⚠️ El mapa base (OpenStreetMap tiles) está bloqueado o sin internet.\n" +
+        "Prueba:\n" +
+        "• Cambia de Wi-Fi a datos\n" +
+        "• Desactiva VPN/adblock\n" +
+        "• Intenta otra red\n"
+      );
+    });
+
+    function metersToFeet(m) { return m * 3.28084; }
+    function msToMph(ms) { return ms * 2.23694; }
+
+    function dirText(deg) {
+      const dirs = ["N","NE","E","SE","S","SW","W","NW"];
+      return dirs[Math.round(deg/45) % 8];
+    }
+
+    async function fetchForecast(lat, lon) {
+      const url =
+        `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
+        `&hourly=wave_height,wave_direction,wave_period,wind_speed,wind_direction` +
+        `&timezone=auto&forecast_days=3`;
+
+      const resp = await fetch(url, { cache: "no-store" });
+      if (!resp.ok) throw new Error("Open-Meteo no respondió (HTTP " + resp.status + ")");
+      return resp.json();
+    }
+
+    map.on("click", async (e) => {
+      const lat = e.latlng.lat.toFixed(4);
+      const lon = e.latlng.lng.toFixed(4);
 
       try {
-        const map = L.map('map').setView([20, -100], 3);
+        const data = await fetchForecast(lat, lon);
 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '&copy; OpenStreetMap contributors',
-          maxZoom: 18
-        }).addTo(map);
+        // Tomamos el primer punto (puedes cambiar a uno por hora más tarde)
+        const i = 0;
+        const t = data.hourly.time[i].replace("T", " ");
+        const waveH = data.hourly.wave_height[i];
+        const waveDir = data.hourly.wave_direction[i];
+        const wavePer = data.hourly.wave_period[i];
+        const windSp = data.hourly.wind_speed[i];
+        const windDir = data.hourly.wind_direction[i];
 
-        function metersToFeet(m) { return m * 3.28084; }
-        function msToMph(ms) { return ms * 2.23694; }
+        const html = `
+          <div style="font-size:14px; line-height:1.3">
+            <div style="font-weight:700; margin-bottom:6px">${t}</div>
+            <div style="margin-bottom:8px;color:#333">Lat ${lat}, Lon ${lon}</div>
 
-        async function fetchForecast(lat, lon) {
-          const url =
-            `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}` +
-            `&hourly=wave_height,wave_direction,wave_period,wind_speed,wind_direction` +
-            `&timezone=auto&forecast_days=3`;
+            <table style="border-collapse:collapse; width:100%">
+              <tr>
+                <th style="border:1px solid #ddd;padding:6px;background:#f7f7f7">Dato</th>
+                <th style="border:1px solid #ddd;padding:6px;background:#f7f7f7">Métrico</th>
+                <th style="border:1px solid #ddd;padding:6px;background:#f7f7f7">Imperial</th>
+              </tr>
 
-          const resp = await fetch(url);
-          if (!resp.ok) throw new Error('Error al obtener datos');
-          return resp.json();
-        }
+              <tr>
+                <td style="border:1px solid #ddd;padding:6px">Altura ola</td>
+                <td style="border:1px solid #ddd;padding:6px">${waveH.toFixed(2)} m</td>
+                <td style="border:1px solid #ddd;padding:6px">${metersToFeet(waveH).toFixed(2)} ft</td>
+              </tr>
 
-        function formatDirection(deg) {
-          const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-          const ix = Math.round(deg / 45) % 8;
-          return dirs[ix];
-        }
+              <tr>
+                <td style="border:1px solid #ddd;padding:6px">Período</td>
+                <td style="border:1px solid #ddd;padding:6px" colspan="2">${wavePer.toFixed(1)} s</td>
+              </tr>
 
-        map.on('click', async (e) => {
-          const { lat, lng } = e.latlng;
-          try {
-            const data = await fetchForecast(lat.toFixed(4), lng.toFixed(4));
-            const idx = 0;
+              <tr>
+                <td style="border:1px solid #ddd;padding:6px">Dirección ola</td>
+                <td style="border:1px solid #ddd;padding:6px" colspan="2">${dirText(waveDir)} (${waveDir.toFixed(0)}°)</td>
+              </tr>
 
-            const waveHeight = data.hourly.wave_height[idx];
-            const waveDirection = data.hourly.wave_direction[idx];
-            const wavePeriod = data.hourly.wave_period[idx];
-            const windSpeed = data.hourly.wind_speed[idx];
-            const windDir = data.hourly.wind_direction[idx];
+              <tr>
+                <td style="border:1px solid #ddd;padding:6px">Viento</td>
+                <td style="border:1px solid #ddd;padding:6px">${windSp.toFixed(1)} m/s</td>
+                <td style="border:1px solid #ddd;padding:6px">${msToMph(windSp).toFixed(1)} mph</td>
+              </tr>
 
-            const content = `
-              <div style="font-size:14px;">
-                <strong>${data.hourly.time[idx].replace('T',' ')}</strong><br><br>
-                <table style="border-collapse:collapse; width:100%;">
-                  <tr><th style="border:1px solid #ccc; padding:4px;">Métrica</th><th style="border:1px solid #ccc; padding:4px;">SI</th><th style="border:1px solid #ccc; padding:4px;">Imperial</th></tr>
-                  <tr><td style="border:1px solid #ccc; padding:4px;">Altura ola</td><td style="border:1px solid #ccc; padding:4px;">${waveHeight.toFixed(2)} m</td><td style="border:1px solid #ccc; padding:4px;">${metersToFeet(waveHeight).toFixed(2)} ft</td></tr>
-                  <tr><td style="border:1px solid #ccc; padding:4px;">Período</td><td style="border:1px solid #ccc; padding:4px;" colspan="2">${wavePeriod.toFixed(1)} s</td></tr>
-                  <tr><td style="border:1px solid #ccc; padding:4px;">Dir. ola</td><td style="border:1px solid #ccc; padding:4px;" colspan="2">${formatDirection(waveDirection)} (${waveDirection.toFixed(0)}°)</td></tr>
-                  <tr><td style="border:1px solid #ccc; padding:4px;">Viento</td><td style="border:1px solid #ccc; padding:4px;">${windSpeed.toFixed(1)} m/s</td><td style="border:1px solid #ccc; padding:4px;">${msToMph(windSpeed).toFixed(1)} mph</td></tr>
-                  <tr><td style="border:1px solid #ccc; padding:4px;">Dir. viento</td><td style="border:1px solid #ccc; padding:4px;" colspan="2">${formatDirection(windDir)} (${windDir.toFixed(0)}°)</td></tr>
-                </table>
-              </div>
-            `;
+              <tr>
+                <td style="border:1px solid #ddd;padding:6px">Dirección viento</td>
+                <td style="border:1px solid #ddd;padding:6px" colspan="2">${dirText(windDir)} (${windDir.toFixed(0)}°)</td>
+              </tr>
+            </table>
+          </div>
+        `;
 
-            L.popup().setLatLng(e.latlng).setContent(content).openOn(map);
-            status.textContent = ""; // limpia errores
-          } catch (err) {
-            status.textContent = "❌ " + err.message;
-          }
-        });
+        // limpia mensajes si ya funcionó
+        statusEl.style.display = "none";
+        L.popup().setLatLng(e.latlng).setContent(html).openOn(map);
 
       } catch (err) {
-        status.textContent = "❌ Error inicializando mapa: " + err.message;
+        showStatus(
+          "❌ Error obteniendo forecast.\n" +
+          (err && err.message ? err.message : String(err)) + "\n\n" +
+          "Prueba:\n" +
+          "• Cambiar de red (Wi-Fi/datos)\n" +
+          "• Desactivar VPN/adblock\n"
+        );
       }
-    })();
+    });
   </script>
 </body>
 </html>
